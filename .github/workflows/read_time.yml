@@ -33,6 +33,15 @@ jobs:
       REPOSITORY: ${{ github.repository }}
       YEAR: ${{ vars.YEAR }}
     steps:
+      - name: Test secret
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_PAGE: ${{ secrets.NOTION_PAGE }}
+          WEREAD_COOKIE: ${{ secrets.WEREAD_COOKIE }}
+        run: |
+            echo "NOTION_TOKEN is: $NOTION_TOKEN"
+            echo "NOTION_PAGE is: $NOTION_PAGE"
+            echo "WEREAD_COOKIE is: $WEREAD_COOKIE"
       - name: Checkout
         uses: actions/checkout@v4
       - name: Set up Python

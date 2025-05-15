@@ -5,3 +5,4 @@ retrying
 pendulum
 python-dotenv
 weread2notionpro
+beautifulsoup4

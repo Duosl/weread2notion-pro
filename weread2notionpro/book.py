@@ -156,18 +156,38 @@ notion_books = {}
 
 
 def main():
+    """
+    主函数，负责同步微信读书书架数据到Notion
+    1. 获取微信读书书架数据和Notion中已有书籍数据
+    2. 处理书籍分类和同步状态判断
+    3. 筛选需要同步的书籍
+    4. 调用insert_book_to_notion插入或更新书籍数据
+    """
     global notion_books
     global archive_dict
-    bookshelf_books = weread_api.get_bookshelf()
-    notion_books = notion_helper.get_all_book()
-    bookProgress = bookshelf_books.get("bookProgress")
-    bookProgress = {book.get("bookId"): book for book in bookProgress}
+    
+    # 获取微信读书书架数据和Notion中已有书籍数据
+    bookshelf_books = weread_api.get_bookshelf()  # 从微信读书API获取书架数据
+    notion_books = notion_helper.get_all_book()  # 从Notion获取所有已存在的书籍数据
+    
+    # 处理书籍进度数据
+    bookProgress = bookshelf_books.get("bookProgress")  # 获取书架中的阅读进度数据
+    bookProgress = {book.get("bookId"): book for book in bookProgress}  # 转换为字典格式，key为bookId
+    
+    # 处理书籍分类数据
     for archive in bookshelf_books.get("archive"):
-        name = archive.get("name")
-        bookIds = archive.get("bookIds")
-        archive_dict.update({bookId: name for bookId in bookIds})
+        name = archive.get("name")  # 获取分类名称
+        bookIds = archive.get("bookIds")  # 获取该分类下的书籍ID列表
+        archive_dict.update({bookId: name for bookId in bookIds})  # 更新全局分类字典
+    
+    # 判断哪些书籍不需要同步
     not_need_sync = []
     for key, value in notion_books.items():
+        # 判断条件：
+        # 1. 书籍不在微信读书进度中，或者阅读时间未变化
+        # 2. 分类一致
+        # 3. 封面存在
+        # 4. 状态不是"已读"，或者是"已读"但已有评分
         if (
             (
                 key not in bookProgress
@@ -180,12 +200,18 @@ def main():
                 or (value.get("status") == "已读" and value.get("myRating"))
             )
         ):
-            not_need_sync.append(key)
-    notebooks = weread_api.get_notebooklist()
-    notebooks = [d["bookId"] for d in notebooks if "bookId" in d]
-    books = bookshelf_books.get("books")
-    books = [d["bookId"] for d in books if "bookId" in d]
+            not_need_sync.append(key)  # 添加到不需要同步的列表
+    
+    # 获取需要同步的书籍ID
+    notebooks = weread_api.get_notebooklist()  # 获取笔记本中的书籍
+    notebooks = [d["bookId"] for d in notebooks if "bookId" in d]  # 提取书籍ID
+    books = bookshelf_books.get("books")  # 获取书架中的书籍
+    books = [d["bookId"] for d in books if "bookId" in d]  # 提取书籍ID
+    
+    # 合并笔记本和书架中的书籍，并排除不需要同步的书籍
     books = list((set(notebooks) | set(books)) - set(not_need_sync))
+    
+    # 遍历需要同步的书籍，插入或更新到Notion
     for index, bookId in enumerate(books):
         insert_book_to_notion(books, index, bookId)
 

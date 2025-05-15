@@ -2,6 +2,11 @@ import hashlib
 import json
 import os
 import re
+from bs4 import BeautifulSoup
+
+import logging
+# 启用调试日志
+logging.basicConfig(level=logging.DEBUG)
 
 import requests
 from requests.utils import cookiejar_from_dict
@@ -10,15 +15,16 @@ from urllib.parse import quote
 from dotenv import load_dotenv
 
 load_dotenv()
-WEREAD_URL = "https://weread.qq.com/"
-WEREAD_NOTEBOOKS_URL = "https://i.weread.qq.com/user/notebooks"
-WEREAD_BOOKMARKLIST_URL = "https://i.weread.qq.com/book/bookmarklist"
-WEREAD_CHAPTER_INFO = "https://i.weread.qq.com/book/chapterInfos"
-WEREAD_READ_INFO_URL = "https://i.weread.qq.com/book/readinfo"
-WEREAD_REVIEW_LIST_URL = "https://i.weread.qq.com/review/list"
-WEREAD_BOOK_INFO = "https://i.weread.qq.com/book/info"
-WEREAD_READDATA_DETAIL = "https://i.weread.qq.com/readdata/detail"
-WEREAD_HISTORY_URL = "https://i.weread.qq.com/readdata/summary?synckey=0"
+
+URL_WEREAD = "https://weread.qq.com/"
+URL_WEREAD_NOTEBOOKS = "https://weread.qq.com/api/user/notebook"
+URL_WEREAD_BOOK_INFO = "https://weread.qq.com/api/book/info"
+URL_WEREAD_BOOKMARKLIST = "https://weread.qq.com/web/book/bookmarklist"
+URL_WEREAD_CHAPTER_INFO = "https://weread.qq.com/web/book/chapterInfos"
+URL_WEREAD_REVIEW_LIST = "https://weread.qq.com/web/review/list"
+URL_WEREAD_READ_INFO = "https://weread.qq.com/web/book/getProgress"
+URL_WEREAD_SHELF_SYNC = "https://weread.qq.com/web/shelf/syncBook"
+URL_WEREAD_HISTORY = "https://weread.qq.com/api/readdata/summary?synckey=0"
 
 
 class WeReadApi:
@@ -26,6 +32,10 @@ class WeReadApi:
         self.cookie = self.get_cookie()
         self.session = requests.Session()
         self.session.cookies = self.parse_cookie_string()
+        self.session.headers.update({
+            'Cookie': self.cookie,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+        })
 
     def try_get_cloud_cookie(self, url, id, password):
         if url.endswith("/"):
@@ -72,11 +82,74 @@ class WeReadApi:
         
         return cookiejar
 
+    def get_standard_headers(self):
+        return {
+            'Cookie': self.cookie,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+            'Connection': 'keep-alive',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'cache-control': 'no-cache',
+            'pragma': 'no-cache',
+            'sec-ch-ua': '"Google Chrome";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'document',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-site': 'same-origin',
+            'upgrade-insecure-requests': '1'
+        }
+
+    def visit_homepage(self):
+        """访问微信读书主页"""
+        try:
+            self.session.get(URL_WEREAD, headers=self.get_standard_headers(), timeout=30)
+        except Exception as e:
+            print("访问主页失败:", str(e))
+
+    def _get_bookshelf_bookIds(self):
+        """获取所有书架书籍 id"""
+        self.visit_homepage()
+        # 1. 模拟请求页面
+        r = self.session.get("https://weread.qq.com/web/shelf")
+        if r.ok:
+            html_content = r.text
+            # 2. 解析 HTML
+            soup = BeautifulSoup(html_content, 'html.parser')
+            # 3. 查找所有 script 标签内容
+            scripts = soup.find_all('script')
+            # 4. 正则匹配 __INITIAL_STATE__
+            pattern = re.compile(r'window\.__INITIAL_STATE__\s*=\s*({[\s\S]*?});')
+
+            initial_state = None
+            for script in scripts:
+                if script.string and pattern.search(script.string):
+                    match = pattern.search(script.string)
+                    if match:
+                        json_str = match.group(1)
+                        # 5. 转换 JSON 字符串为 Python 字典
+                        try:
+                            initial_state = json.loads(json_str)
+                            print("✅ 成功提取 __INITIAL_STATE__")
+                            rawBooks = initial_state['shelf']['rawBooks']
+                            bookIds = [item["bookId"] for item in rawBooks]
+                            return bookIds
+                        except json.JSONDecodeError as e:
+                            print("❌ JSON 解析失败：", e)
+                        break
+
+            if not initial_state:
+                print("❌ 没有找到 __INITIAL_STATE__")
+        else:
+            errcode = r.json().get("errcode",0)
+            self.handle_errcode(errcode)
+            raise Exception(f"Could not get bookshelf {r.text}")
+
     def get_bookshelf(self):
-        self.session.get(WEREAD_URL)
-        r = self.session.get(
-            "https://i.weread.qq.com/shelf/sync?synckey=0&teenmode=0&album=1&onlyBookid=0"
-        )
+        """获取所有书架书籍信息"""
+        self.visit_homepage()
+        bookIds = api.get_bookshelf_bookIds()
+        r = self.session.post(URL_WEREAD_SHELF_SYNC, json={"bookIds": bookIds})
         if r.ok:
             return r.json()
         else:
@@ -91,8 +164,8 @@ class WeReadApi:
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def get_notebooklist(self):
         """获取笔记本列表"""
-        self.session.get(WEREAD_URL)
-        r = self.session.get(WEREAD_NOTEBOOKS_URL)
+        self.visit_homepage()
+        r = self.session.get(URL_WEREAD_NOTEBOOKS)
         if r.ok:
             data = r.json()
             books = data.get("books")
@@ -106,9 +179,9 @@ class WeReadApi:
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def get_bookinfo(self, bookId):
         """获取书的详情"""
-        self.session.get(WEREAD_URL)
+        self.visit_homepage()
         params = dict(bookId=bookId)
-        r = self.session.get(WEREAD_BOOK_INFO, params=params)
+        r = self.session.get(URL_WEREAD_BOOK_INFO, params=params)
         if r.ok:
             return r.json()
         else:
@@ -119,9 +192,10 @@ class WeReadApi:
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def get_bookmark_list(self, bookId):
-        self.session.get(WEREAD_URL)
+        """获取书的书签列表"""
+        self.visit_homepage()
         params = dict(bookId=bookId)
-        r = self.session.get(WEREAD_BOOKMARKLIST_URL, params=params)
+        r = self.session.get(URL_WEREAD_BOOKMARKLIST, params=params)
         if r.ok:
             with open("bookmark.json","w") as f:
                 f.write(json.dumps(r.json(),indent=4,ensure_ascii=False))
@@ -134,7 +208,7 @@ class WeReadApi:
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def get_read_info(self, bookId):
-        self.session.get(WEREAD_URL)
+        self.visit_homepage()
         params = dict(
             noteCount=1,
             readingDetail=1,
@@ -152,7 +226,7 @@ class WeReadApi:
             "osver":"12",
             "User-Agent": "WeRead/8.2.5 WRBrand/xiaomi Dalvik/2.1.0 (Linux; U; Android 12; Redmi Note 7 Pro Build/SQ3A.220705.004)",
         }
-        r = self.session.get(WEREAD_READ_INFO_URL,headers=headers, params=params)
+        r = self.session.get(URL_WEREAD_READ_INFO,headers=headers, params=params)
         if r.ok:
             return r.json()
         else:
@@ -162,11 +236,11 @@ class WeReadApi:
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def get_review_list(self, bookId):
-        self.session.get(WEREAD_URL)
+        self.visit_homepage()
         params = dict(bookId=bookId, listType=11, mine=1, syncKey=0)
-        r = self.session.get(WEREAD_REVIEW_LIST_URL, params=params)
+        r = self.session.get(URL_WEREAD_REVIEW_LIST, params=params)
         if r.ok:
-            reviews = r.json().get("reviews")
+            reviews = r.json().get("reviews", [])
             reviews = list(map(lambda x: x.get("review"), reviews))
             reviews = [
                 {"chapterUid": 1000000, **x} if x.get("type") == 4 else x
@@ -182,8 +256,9 @@ class WeReadApi:
 
     
     def get_api_data(self):
-        self.session.get(WEREAD_URL)
-        r = self.session.get(WEREAD_HISTORY_URL)
+        self.visit_homepage()
+        r = self.session.get(URL_WEREAD_HISTORY)
+        print(r.text)
         if r.ok:
             return r.json()
         else:
@@ -195,9 +270,15 @@ class WeReadApi:
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def get_chapter_info(self, bookId):
-        self.session.get(WEREAD_URL)
-        body = {"bookIds": [bookId], "synckeys": [0], "teenmode": 0}
-        r = self.session.post(WEREAD_CHAPTER_INFO, json=body)
+        self.visit_homepage()
+        body = {"bookIds": [str(bookId)], "synckeys": [0], "teenmode": 0}
+        headers = {
+            'Cookie': self.cookie,
+            'Content-Type': 'application/json;charset=UTF-8',
+            'Accept': 'application/json, text/plain, */*',
+
+        }
+        r = self.session.post(URL_WEREAD_CHAPTER_INFO, headers=headers, json=body)
         if (
             r.ok
             and "data" in r.json()
